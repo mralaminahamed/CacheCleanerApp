@@ -1,0 +1,38 @@
+included:
+  - Sources
+
+excluded:
+  - .build
+  - Package.swift
+
+disabled_rules:
+  - trailing_whitespace
+  - line_length
+  - file_length
+  - type_body_length
+  - function_body_length
+  - cyclomatic_complexity
+
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - first_where
+  - force_unwrapping
+  - implicit_return
+  - sorted_imports
+
+force_unwrapping:
+  severity: error
+
+identifier_name:
+  min_length: 2
+  excluded:
+    - id
+    - ok
+    - x
+    - y
+
+type_name:
+  min_length: 3
+
+reporter: xcode
