@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Cache Cleaner — macOS Prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #111114; }
+  body {
+    /* Prefer system SF; fall back to Inter for non-Apple. */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Inter", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color-scheme: light dark;
+    overflow: hidden;
+  }
+  code { font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace; }
+  #root { height: 100vh; width: 100vw; }
+
+  /* Desktop backdrop */
+  .desktop {
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(1200px 800px at 20% 10%, oklch(0.48 0.06 200) 0%, transparent 50%),
+      radial-gradient(1000px 700px at 85% 90%, oklch(0.42 0.09 280) 0%, transparent 55%),
+      linear-gradient(135deg, oklch(0.18 0.02 250) 0%, oklch(0.12 0.01 260) 100%);
+    display:flex; align-items:center; justify-content:center;
+    padding: 24px;
+  }
+
+  .window-shell {
+    width: min(1120px, 94vw);
+    height: min(760px, 92vh);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.5),
+      0 30px 60px rgba(0,0,0,0.5),
+      0 12px 24px rgba(0,0,0,0.3);
+    position: relative;
+    background: #1e1e20;
+  }
+
+  /* Menu bar (fake macOS system bar above the window) */
+  .menubar {
+    position: fixed; top: 0; left: 0; right: 0; height: 26px;
+    background: rgba(255,255,255,0.08);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    border-bottom: 0.5px solid rgba(255,255,255,0.1);
+    display: flex; align-items: center; padding: 0 14px;
+    font-size: 13px; color: rgba(255,255,255,0.9);
+    font-weight: 500; z-index: 100;
+    gap: 18px;
+  }
+  .menubar .logo { font-size: 14px; }
+  .menubar .item { font-weight: 400; cursor: default; }
+  .menubar .item.bold { font-weight: 600; }
+  .menubar .right { margin-left:auto; display:flex; gap: 14px; align-items: center; font-size: 12px; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .menubar .item {
+    font-weight: 400; cursor: default;
+    padding: 2px 10px; border-radius: 4px;
+    transition: background 60ms;
+    user-select: none;
+  }
+  .menubar .item.bold { font-weight: 600; }
+  .menubar .item.logo { font-size: 14px; padding: 0 8px 2px; }
+  .menubar .item.open { background: rgba(255,255,255,0.22); }
+  .menubar .item:hover { background: rgba(255,255,255,0.14); }
+  .menubar .right .item { padding: 2px 6px; }
+
+  /* Dropdown menus */
+  .menu-dropdown {
+    position: fixed;
+    top: 26px;
+    min-width: 260px;
+    background: rgba(40,40,44,0.85);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border: 0.5px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 5px 0;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(0,0,0,0.3);
+    z-index: 150;
+    color: #fff;
+    font-size: 13px;
+    animation: slideDown 90ms cubic-bezier(.2,.7,.2,1);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
+  }
+  .menu-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 3px 14px; height: 22px;
+    cursor: default;
+  }
+  .menu-item .label { flex: 1; color: rgba(255,255,255,0.95); white-space: nowrap; }
+  .menu-item .shortcut { color: rgba(255,255,255,0.5); font-size: 12.5px; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; margin-left: 20px; }
+  .menu-item .check { width: 12px; color: rgba(255,255,255,0.95); font-size: 11px; display:inline-flex; justify-content:center; }
+  .menu-item:hover { background: #0A84FF; }
+  .menu-item:hover .label,
+  .menu-item:hover .shortcut,
+  .menu-item:hover .check { color: #fff; }
+  .menu-item.disabled { pointer-events: none; }
+  .menu-item.disabled .label,
+  .menu-item.disabled .shortcut { color: rgba(255,255,255,0.3); }
+  .menu-sep { height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0; }
+  .menu-submenu-arrow { color: rgba(255,255,255,0.5); font-size: 10px; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-16px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Tweaks panel */
+  .tweaks-panel {
+    position: fixed; bottom: 20px; right: 20px;
+    width: 260px; padding: 14px; border-radius: 12px;
+    background: rgba(30,30,34,0.92);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    border: 0.5px solid rgba(255,255,255,0.15);
+    box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    color: #F5F5F7; font-size: 12px;
+    z-index: 200;
+    display: none;
+  }
+  .tweaks-panel.visible { display: block; }
+  .tweaks-panel h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .tweaks-row { display:flex; align-items:center; justify-content:space-between; gap: 8px; padding: 6px 0; }
+  .tweaks-row label { flex: 1; color: rgba(245,245,247,0.8); }
+  .tweaks-seg { display:inline-flex; background: rgba(255,255,255,0.08); border-radius: 6px; padding: 2px; }
+  .tweaks-seg button {
+    border: none; background: transparent; color: rgba(245,245,247,0.7);
+    font: inherit; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  }
+  .tweaks-seg button.on { background: rgba(255,255,255,0.18); color: #fff; }
+
+  /* Hide menubar / desktop when embedded on very small viewports */
+  @media (max-height: 540px) {
+    .menubar { display: none; }
+    .desktop { padding: 8px; }
+    .window-shell { height: 98vh; width: 98vw; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="app.jsx"></script>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "light",
+  "accent": "teal",
+  "requireAuth": true,
+  "showDesktop": true
+}/*EDITMODE-END*/;
+
+function MenuBar({ tweaks, update }) {
+  const [openMenu, setOpenMenu] = React.useState(null);
+  const [now, setNow] = React.useState(new Date());
+  const barRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  React.useEffect(() => {
+    if (!openMenu) return;
+    const close = (e) => {
+      if (e.target.closest && e.target.closest('.menu-dropdown, .menubar .item')) return;
+      setOpenMenu(null);
+    };
+    const esc = (e) => { if (e.key === 'Escape') setOpenMenu(null); };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', esc);
+    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', esc); };
+  }, [openMenu]);
+
+  const flashEvent = (text) => { window.dispatchEvent(new CustomEvent('cc-menu-action', { detail: { text } })); setOpenMenu(null); };
+  const nav = (screen) => { window.dispatchEvent(new CustomEvent('cc-nav', { detail: { screen } })); setOpenMenu(null); };
+  const openModal = (name) => { window.dispatchEvent(new CustomEvent('cc-open-modal', { detail: { name } })); setOpenMenu(null); };
+  const filterCat = (cat) => { nav('results'); setTimeout(() => window.dispatchEvent(new CustomEvent('cc-filter', { detail: { cat } })), 60); };
+
+  const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const dateStr = now.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+
+  const menus = {
+    apple: { label: '\u25cf', logo: true, items: [
+      { label: 'About This Computer', onClick: () => flashEvent('About this computer') },
+      { sep: true },
+      { label: 'System Settings\u2026', onClick: () => flashEvent('Opening System Settings') },
+      { label: 'App Store\u2026', badge: '3', onClick: () => flashEvent('Opening App Store') },
+      { sep: true },
+      { label: 'Recent Items', submenu: true, disabled: true },
+      { sep: true },
+      { label: 'Force Quit\u2026', shortcut: '\u2325\u2318\u238b', onClick: () => flashEvent('Force Quit dialog') },
+      { sep: true },
+      { label: 'Sleep', onClick: () => flashEvent('Going to sleep') },
+      { label: 'Restart\u2026', onClick: () => flashEvent('Restart confirmation') },
+      { label: 'Shut Down\u2026', onClick: () => flashEvent('Shut Down confirmation') },
+      { sep: true },
+      { label: 'Lock Screen', shortcut: '\u2303\u2318Q', onClick: () => flashEvent('Screen locked') },
+      { label: 'Log Out User\u2026', shortcut: '\u21e7\u2318Q', onClick: () => flashEvent('Logging out') },
+    ]},
+    app: { label: 'Cache Cleaner', bold: true, items: [
+      { label: 'About Cache Cleaner', onClick: () => flashEvent('About Cache Cleaner 1.4.2') },
+      { sep: true },
+      { label: 'Check for Updates\u2026', onClick: () => flashEvent('You\u2019re up to date') },
+      { sep: true },
+      { label: 'Settings\u2026', shortcut: '\u2318,', onClick: () => nav('settings') },
+      { sep: true },
+      { label: 'Services', submenu: true, disabled: true },
+      { sep: true },
+      { label: 'Hide Cache Cleaner', shortcut: '\u2318H', onClick: () => flashEvent('Window hidden') },
+      { label: 'Hide Others', shortcut: '\u2325\u2318H', onClick: () => flashEvent('Other windows hidden') },
+      { label: 'Show All', onClick: () => flashEvent('All windows shown') },
+      { sep: true },
+      { label: 'Quit Cache Cleaner', shortcut: '\u2318Q', onClick: () => flashEvent('Quitting\u2026') },
+    ]},
+    File: { label: 'File', items: [
+      { label: 'New Scan', shortcut: '\u2318N', onClick: () => openModal('scan') },
+      { label: 'New Quick Scan', shortcut: '\u21e7\u2318N', onClick: () => openModal('scan') },
+      { label: 'New Window', shortcut: '\u2325\u2318N', onClick: () => flashEvent('New window opened') },
+      { sep: true },
+      { label: 'Open Scan Results\u2026', shortcut: '\u2318O', onClick: () => nav('results') },
+      { label: 'Open Recent', submenu: true, disabled: true },
+      { sep: true },
+      { label: 'Close Window', shortcut: '\u2318W', onClick: () => flashEvent('Window closed') },
+      { sep: true },
+      { label: 'Save Preset\u2026', shortcut: '\u2318S', onClick: () => flashEvent('Preset saved') },
+      { label: 'Duplicate Preset', shortcut: '\u21e7\u2318S', onClick: () => flashEvent('Preset duplicated') },
+      { label: 'Export Cleanup History\u2026', shortcut: '\u2325\u2318E', onClick: () => flashEvent('Exported cleanup history') },
+      { sep: true },
+      { label: 'Import Rules\u2026', onClick: () => flashEvent('Import rules dialog') },
+      { label: 'Share\u2026', disabled: true },
+      { sep: true },
+      { label: 'Print Report\u2026', shortcut: '\u2318P', onClick: () => flashEvent('Print dialog opened') },
+    ]},
+    Edit: { label: 'Edit', items: [
+      { label: 'Undo', shortcut: '\u2318Z', disabled: true },
+      { label: 'Redo', shortcut: '\u21e7\u2318Z', disabled: true },
+      { sep: true },
+      { label: 'Cut', shortcut: '\u2318X', disabled: true },
+      { label: 'Copy Path', shortcut: '\u2318C', onClick: () => flashEvent('Path copied to clipboard') },
+      { label: 'Paste', shortcut: '\u2318V', disabled: true },
+      { label: 'Delete', onClick: () => flashEvent('Delete triggered') },
+      { label: 'Select All', shortcut: '\u2318A', onClick: () => flashEvent('Selected all visible files') },
+      { sep: true },
+      { label: 'Find', shortcut: '\u2318F', onClick: () => flashEvent('Find bar opened') },
+      { label: 'Find Next', shortcut: '\u2318G', disabled: true },
+      { label: 'Find Previous', shortcut: '\u21e7\u2318G', disabled: true },
+      { sep: true },
+      { label: 'Exclusion Rules\u2026', shortcut: '\u2325\u2318X', onClick: () => openModal('exclude') },
+      { label: 'Preferences\u2026', shortcut: '\u2318,', onClick: () => nav('settings') },
+    ]},
+    View: { label: 'View', items: [
+      { label: 'Dashboard', shortcut: '\u23181', onClick: () => nav('dashboard') },
+      { label: 'Scan Results', shortcut: '\u23182', onClick: () => nav('results') },
+      { label: 'Statistics', shortcut: '\u23183', onClick: () => nav('stats') },
+      { label: 'Settings', shortcut: '\u23184', onClick: () => nav('settings') },
+      { sep: true },
+      { label: 'Show Sidebar', shortcut: '\u2303\u2318S', check: true, onClick: () => flashEvent('Sidebar toggled') },
+      { label: 'Show Path Bar', shortcut: '\u2325\u2318P', onClick: () => flashEvent('Path bar toggled') },
+      { sep: true },
+      { label: 'As List', check: true, onClick: () => flashEvent('List view') },
+      { label: 'As Columns', onClick: () => flashEvent('Column view') },
+      { label: 'As Gallery', onClick: () => flashEvent('Gallery view') },
+      { sep: true },
+      { label: 'Group By Category', onClick: () => flashEvent('Grouped by category') },
+      { label: 'Appearance', rightText: tweaks.theme === 'dark' ? 'Dark' : 'Light', onClick: () => update('theme', tweaks.theme === 'dark' ? 'light' : 'dark') },
+      { sep: true },
+      { label: 'Enter Full Screen', shortcut: '\u2303\u2318F', onClick: () => flashEvent('Entered full screen') },
+    ]},
+    Go: { label: 'Go', items: [
+      { label: 'Back', shortcut: '\u2318[', onClick: () => flashEvent('Back') },
+      { label: 'Forward', shortcut: '\u2318]', disabled: true },
+      { sep: true },
+      { label: 'Dashboard', shortcut: '\u21e7\u2318H', onClick: () => nav('dashboard') },
+      { label: 'Scan Results', shortcut: '\u21e7\u2318R', onClick: () => nav('results') },
+      { label: 'Statistics', shortcut: '\u21e7\u2318T', onClick: () => nav('stats') },
+      { sep: true },
+      { label: 'Browser Caches', onClick: () => filterCat('Browser') },
+      { label: 'System Caches', onClick: () => filterCat('System') },
+      { label: 'Temporary Files', onClick: () => filterCat('Temp') },
+      { label: 'Application Data', onClick: () => filterCat('App') },
+      { label: 'Xcode & Developer', onClick: () => filterCat('Xcode') },
+      { sep: true },
+      { label: 'Recent Folders', submenu: true, disabled: true },
+    ]},
+    Window: { label: 'Window', items: [
+      { label: 'Minimize', shortcut: '\u2318M', onClick: () => flashEvent('Window minimized') },
+      { label: 'Zoom', onClick: () => flashEvent('Window zoomed') },
+      { label: 'Move to Second Display', disabled: true },
+      { sep: true },
+      { label: 'Tile to Left of Screen', onClick: () => flashEvent('Tiled left') },
+      { label: 'Tile to Right of Screen', onClick: () => flashEvent('Tiled right') },
+      { sep: true },
+      { label: 'Bring All to Front', onClick: () => flashEvent('All windows fronted') },
+      { sep: true },
+      { label: 'Cache Cleaner', check: true, onClick: () => nav('dashboard') },
+    ]},
+    Help: { label: 'Help', items: [
+      { label: 'Cache Cleaner Help', shortcut: '\u2318?', onClick: () => flashEvent('Help window opened') },
+      { sep: true },
+      { label: 'What\u2019s New in 1.4.2', onClick: () => flashEvent('Release notes opened') },
+      { label: 'Keyboard Shortcuts', onClick: () => flashEvent('Shortcuts cheat-sheet') },
+      { sep: true },
+      { label: 'Visit Website', onClick: () => flashEvent('Opening website\u2026') },
+      { label: 'Report an Issue\u2026', onClick: () => flashEvent('Issue reporter opened') },
+      { label: 'Request a Feature\u2026', onClick: () => flashEvent('Feature request sent') },
+      { sep: true },
+      { label: 'Privacy Policy', onClick: () => flashEvent('Privacy policy opened') },
+      { label: 'License Agreement', onClick: () => flashEvent('License opened') },
+    ]},
+  };
+
+  const itemKeys = ['apple','app','File','Edit','View','Go','Window','Help'];
+
+  const renderMenu = (key) => {
+    const m = menus[key];
+    if (!m) return null;
+    const barEl = barRef.current?.querySelector(`[data-menu-key="${key}"]`);
+    const rect = barEl?.getBoundingClientRect();
+    const left = rect ? rect.left : 40;
+    return (
+      <div className="menu-dropdown" style={{ left: Math.max(4, left) }}>
+        {m.items.map((it, i) => {
+          if (it.sep) return <div key={i} className="menu-sep"/>;
+          return (
+            <div key={i}
+              className={`menu-item ${it.disabled ? 'disabled' : ''}`}
+              onClick={() => { if (!it.disabled && it.onClick) it.onClick(); }}>
+              <span className="check">{it.check ? '\u2713' : ''}</span>
+              <span className="label">{it.label}</span>
+              {it.badge && <span style={{ background:'#FF3B30', color:'#fff', fontSize: 10, fontWeight: 600, borderRadius: 8, padding:'0 5px', minWidth: 14, textAlign:'center' }}>{it.badge}</span>}
+              {it.rightText && <span style={{ color:'rgba(255,255,255,0.55)', fontSize: 12 }}>{it.rightText}</span>}
+              {it.shortcut && <span className="shortcut">{it.shortcut}</span>}
+              {it.submenu && <span className="menu-submenu-arrow">{'▸'}</span>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div className="menubar" ref={barRef}>
+        {itemKeys.map(k => {
+          const m = menus[k];
+          const on = openMenu === k;
+          return (
+            <span key={k}
+              data-menu-key={k}
+              className={`item ${m.bold ? 'bold' : ''} ${m.logo ? 'logo' : ''} ${on ? 'open' : ''}`}
+              onClick={() => setOpenMenu(on ? null : k)}
+              onMouseEnter={() => { if (openMenu && openMenu !== k) setOpenMenu(k); }}>
+              {m.label}
+            </span>
+          );
+        })}
+        <span className="right">
+          <span className="item" onClick={() => flashEvent('Spotlight search opened')} title="Search">{'⌕'}</span>
+          <span className="item" onClick={() => flashEvent('Notifications…')}>{'🔋'} 82%</span>
+          <span className="item" onClick={() => flashEvent('Notification Center')}>{dateStr} · {timeStr}</span>
+        </span>
+      </div>
+      {openMenu && renderMenu(openMenu)}
+    </>
+  );
+}
+
+function Shell() {
+  const [tweaks, setTweaks] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cc-tweaks');
+      if (saved) return { ...TWEAK_DEFAULTS, ...JSON.parse(saved) };
+    } catch {}
+    return { ...TWEAK_DEFAULTS };
+  });
+  const [editMode, setEditMode] = useState(false);
+  const [menuToast, setMenuToast] = useState(null);
+
+  useEffect(() => {
+    const onAction = (e) => setMenuToast({ text: e.detail.text, id: Date.now() });
+    window.addEventListener('cc-menu-action', onAction);
+    return () => window.removeEventListener('cc-menu-action', onAction);
+  }, []);
+
+  useEffect(() => {
+    if (!menuToast) return;
+    const id = setTimeout(() => setMenuToast(null), 2200);
+    return () => clearTimeout(id);
+  }, [menuToast]);
+
+  useEffect(()=>{
+    try { localStorage.setItem('cc-tweaks', JSON.stringify(tweaks)); } catch {}
+  }, [tweaks]);
+
+  useEffect(()=>{
+    const handler = (e) => {
+      if (!e.data || typeof e.data !== 'object') return;
+      if (e.data.type === '__activate_edit_mode') setEditMode(true);
+      if (e.data.type === '__deactivate_edit_mode') setEditMode(false);
+    };
+    window.addEventListener('message', handler);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const update = (k, v) => {
+    const next = { ...tweaks, [k]: v };
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { [k]: v } }, '*');
+  };
+
+  return (
+    <>
+      {tweaks.showDesktop ? (
+        <>
+          <MenuBar tweaks={tweaks} update={update}/>
+          <div className="desktop" style={{ paddingTop: 48 }}>
+            <div className="window-shell">
+              <window.App tweaks={tweaks} setTweaks={setTweaks}/>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div style={{ width:'100vw', height:'100vh', background:'#111114' }}>
+          <window.App tweaks={tweaks} setTweaks={setTweaks}/>
+        </div>
+      )}
+
+      <div className={`tweaks-panel ${editMode ? 'visible' : ''}`}>
+        <h3>Tweaks</h3>
+        <div className="tweaks-row">
+          <label>Theme</label>
+          <div className="tweaks-seg">
+            <button className={tweaks.theme==='light'?'on':''} onClick={()=>update('theme','light')}>Light</button>
+            <button className={tweaks.theme==='dark'?'on':''} onClick={()=>update('theme','dark')}>Dark</button>
+          </div>
+        </div>
+        <div className="tweaks-row">
+          <label>Accent</label>
+          <div className="tweaks-seg">
+            <button className={tweaks.accent==='teal'?'on':''} onClick={()=>update('accent','teal')}>Teal</button>
+            <button className={tweaks.accent==='indigo'?'on':''} onClick={()=>update('accent','indigo')}>Indigo</button>
+            <button className={tweaks.accent==='graphite'?'on':''} onClick={()=>update('accent','graphite')}>Mono</button>
+          </div>
+        </div>
+        <div className="tweaks-row">
+          <label>Require admin auth</label>
+          <div className="tweaks-seg">
+            <button className={tweaks.requireAuth?'on':''} onClick={()=>update('requireAuth',true)}>On</button>
+            <button className={!tweaks.requireAuth?'on':''} onClick={()=>update('requireAuth',false)}>Off</button>
+          </div>
+        </div>
+        <div className="tweaks-row">
+          <label>Desktop backdrop</label>
+          <div className="tweaks-seg">
+            <button className={tweaks.showDesktop?'on':''} onClick={()=>update('showDesktop',true)}>On</button>
+            <button className={!tweaks.showDesktop?'on':''} onClick={()=>update('showDesktop',false)}>Off</button>
+          </div>
+        </div>
+      </div>
+
+      {menuToast && (
+        <div key={menuToast.id} style={{
+          position: 'fixed', top: 44, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(40,40,44,0.92)', backdropFilter: 'blur(30px) saturate(180%)',
+          color: '#fff', padding: '8px 16px', borderRadius: 10,
+          border: '0.5px solid rgba(255,255,255,0.14)',
+          boxShadow: '0 12px 32px rgba(0,0,0,0.4)',
+          fontSize: 13, fontWeight: 500, zIndex: 300,
+          animation: 'slideDown 180ms ease-out',
+          pointerEvents: 'none',
+        }}>{menuToast.text}</div>
+      )}
+    </>
+  );
+}
+
+const waitForApp = () => {
+  if (window.App) {
+    ReactDOM.createRoot(document.getElementById('root')).render(<Shell/>);
+  } else setTimeout(waitForApp, 30);
+};
+waitForApp();
+</script>
+</body>
+</html>
