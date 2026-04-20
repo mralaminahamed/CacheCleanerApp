@@ -1,4 +1,4 @@
-name: Release
+name: Release & Notarize
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   release:
-    name: Build & Release (unsigned)
+    name: Build, Sign, Notarize, Release
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -18,12 +18,52 @@ jobs:
       - name: Build release binary
         run: swift build --configuration release
 
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_P12" | base64 --decode > cert.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import cert.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+
+      - name: Code sign
+        run: |
+          codesign --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
+            --entitlements CacheCleaner.entitlements \
+            --options runtime \
+            --timestamp \
+            --deep \
+            .build/release/CacheCleaner
+
       - name: Create app bundle
         run: |
           mkdir -p CacheCleaner.app/Contents/MacOS
           mkdir -p CacheCleaner.app/Contents/Resources
           cp .build/release/CacheCleaner CacheCleaner.app/Contents/MacOS/
           cp Sources/CacheCleanerApp/Info.plist CacheCleaner.app/Contents/
+          codesign --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
+            --entitlements CacheCleaner.entitlements \
+            --options runtime \
+            --timestamp \
+            CacheCleaner.app
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent CacheCleaner.app CacheCleaner.zip
+          xcrun notarytool submit CacheCleaner.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple CacheCleaner.app
 
       - name: Create DMG
         run: |
@@ -39,8 +79,3 @@ jobs:
           name: Cache Cleaner ${{ github.ref_name }}
           files: CacheCleaner-${{ github.ref_name }}.dmg
           generate_release_notes: true
-
-# To enable notarization when you have an Apple Developer account:
-# 1. Add secrets: APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD,
-#    APPLE_TEAM_NAME, APPLE_TEAM_ID, APPLE_ID, APPLE_APP_PASSWORD
-# 2. See docs/notarization.md for step-by-step setup
