@@ -1,0 +1,22 @@
+name: Test & Build
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Unit Tests
+        run: swift test --configuration debug
+      - name: Build Release
+        run: swift build --configuration release
+
+  lint:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v3
+      - name: SwiftLint
+        run: |
+          brew install swiftlint
+          swiftlint lint Sources/ --strict
