@@ -11,9 +11,7 @@ let package = Package(
     .library(name: "CleanupEngine", targets: ["CleanupEngine"]),
     .library(name: "DataPersistence", targets: ["DataPersistence"]),
   ],
-  dependencies: [
-    .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.0.0"),
-  ],
+  dependencies: [],
   targets: [
     .executableTarget(
       name: "CacheCleanerApp",
@@ -22,7 +20,7 @@ let package = Package(
         "CacheScanner",
         "CleanupEngine",
         "DataPersistence",
-      ]
+      ],
     ),
     .target(name: "CacheCleanerUI", dependencies: ["DataPersistence", "CacheScanner", "CleanupEngine"]),
     .target(name: "CacheScanner"),

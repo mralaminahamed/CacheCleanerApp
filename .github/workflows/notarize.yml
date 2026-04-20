@@ -1,4 +1,4 @@
-name: Notarize & Release
+name: Release & Notarize
 
 on:
   push:
@@ -6,43 +6,76 @@ on:
       - 'v*'
 
 jobs:
-  notarize:
+  release:
+    name: Build, Sign, Notarize, Release
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Build App
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build release binary
         run: swift build --configuration release
 
-      - name: Code Sign
+      - name: Import signing certificate
         env:
-          SIGNING_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          SIGNING_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          echo "$SIGNING_CERTIFICATE" | base64 -d > cert.p12
-          security import cert.p12 -P "$SIGNING_PASSWORD" -A
-          codesign -s "Developer ID Application" --deep --strict .build/release/CacheCleaner
+          echo "$CERTIFICATE_P12" | base64 --decode > cert.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import cert.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
 
-      - name: Notarize with Apple
+      - name: Code sign
+        run: |
+          codesign --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
+            --entitlements CacheCleaner.entitlements \
+            --options runtime \
+            --timestamp \
+            --deep \
+            .build/release/CacheCleaner
+
+      - name: Create app bundle
+        run: |
+          mkdir -p CacheCleaner.app/Contents/MacOS
+          mkdir -p CacheCleaner.app/Contents/Resources
+          cp .build/release/CacheCleaner CacheCleaner.app/Contents/MacOS/
+          cp Sources/CacheCleanerApp/Info.plist CacheCleaner.app/Contents/
+          codesign --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
+            --entitlements CacheCleaner.entitlements \
+            --options runtime \
+            --timestamp \
+            CacheCleaner.app
+
+      - name: Notarize
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit .build/release/CacheCleaner.app \
+          ditto -c -k --keepParent CacheCleaner.app CacheCleaner.zip
+          xcrun notarytool submit CacheCleaner.zip \
             --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "YOUR_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
             --wait
+          xcrun stapler staple CacheCleaner.app
 
       - name: Create DMG
         run: |
-          hdiutil create -volname "Cache Cleaner" \
-            -srcfolder .build/release/ \
-            -ov -format UDZO CacheCleaner.dmg
+          hdiutil create \
+            -volname "Cache Cleaner" \
+            -srcfolder CacheCleaner.app \
+            -ov -format UDZO \
+            CacheCleaner-${{ github.ref_name }}.dmg
 
-      - name: Release
-        uses: actions/create-release@v1
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          release_name: "Cache Cleaner ${{ github.ref }}"
-          files: CacheCleaner.dmg
+          name: Cache Cleaner ${{ github.ref_name }}
+          files: CacheCleaner-${{ github.ref_name }}.dmg
+          generate_release_notes: true
